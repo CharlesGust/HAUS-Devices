@@ -64,7 +64,8 @@ The connection returns in it's open state .
         serial_paths = _serial_ports()
         serial_list = []
         for port in serial_paths:
-            connection = serial.serial_for_url(port, timeout = 5)
+            print port
+            connection = serial.serial_for_url(port, do_not_open=True, timeout=5)
             ### Make sure to close a
             if connection.isOpen():
                 connection.close()
@@ -103,7 +104,7 @@ The connection returns in it's open state .
         current_time = start
         while current_time - start < seconds:
             log.append(self.read_monitors_to_json(name, port))
-            current_time = time.time()  
+            current_time = time.time()
         average_data = {}
         for log in logs:
             for key, val in log['atoms'].iteritems():
@@ -448,6 +449,16 @@ Relay's must have an '@' before them.
             except KeyError:
                 self.serial_locks[last_port] = Lock()
                 self.device_locks[device_name] = self.serial_locks[last_port]
+            # We don't call self.pickup_conn() because the paradigm of
+            #  last device connected doesn't mean anything when setting up
+            #  a device this way. Because the device is accessed over the serial
+            #  line, it does not show up and disappear when plugged and
+            #  unplugged. Since we ask the user to input the path to the
+            #  device, it only makes sense to use what the user provided.
+            #  Maybe it's possible to attempt a read at each serial line
+            #  and only work with the ones that are connected, but that
+            #  likely means waiting for a timeout period for each unused
+            #  port.
             last_device_connected = self.pickup_conn()[-1]
             if baud_rate != '':
                 try:
@@ -467,8 +478,8 @@ Relay's must have an '@' before them.
     def run_setup(self, group_mode = False):
         num_devices = len(_serial_ports())
 
-        if (sys.platform.startswith('linux2') and (num_devices == 1) and
-            (_serial_ports()[0].startswith('/dev/ttyS1'))):
+        if (sys.platform.startswith('linux2') and
+            (_serial_ports()[0].startswith('/dev/ttyS'))):
             return self.virtual_connections(group_mode)
 
         setup_instructions = """
@@ -597,10 +608,14 @@ def _serial_ports():
     elif sys.platform.startswith('linux') or sys.platform.startswith('cygwin'):
         ### The second is for xbee port ###
         ports = glob.glob('/dev/ttyACM*') + glob.glob('/dev/ttyUSB*')
-        ###This cannot go here.
-        # if len(ports) == 0:
-        #     # on ubuntu with virtual connections
-        #     ports = ['/dev/ttyS1']
+        if len(ports) == 0:
+            # might be on ubuntu with virtual connections, so do a glob.glob
+            #  that will still be len() == 0 on non-virtual connections
+            # How to detect if in a VM? It may be that /dev/vboxusb only
+            #  exists on VM's, but have to check with a native Ubuntu (ie, Pi)
+
+            if len(glob.glob('/dev/vboxusb*')) > 0:
+                ports = glob.glob('/dev/ttyS*')
     elif sys.platform.startswith('darwin'):
         ### the second glob is for the xbee
         ports = glob.glob('/dev/tty.usbmodem*') + glob.glob('/dev/tty.usbserial*')
