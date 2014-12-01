@@ -494,7 +494,7 @@ connect)
         if virtual_connection:
             num_setupdevices = 0
         else:
-            answer = raw_input('Plug all your devices in now to continue, then hit enter:')
+            raw_input('Plug all your devices in now to continue, then hit enter:')
             num_totaldevices = len(_serial_ports())
             num_setupdevices = int(raw_input('Found {} devices, how many devices do you want to name? (1-n): '.format(num_totaldevices)))
 
@@ -515,8 +515,8 @@ connect)
         if not virtual_connection:
             print "Unplug them now to continue..."
             ### Take number of devices connected initially and subtract devices to program ###
-            starting = num_devices - answer
-            while len(_serial_ports()) > (starting):
+            starting = num_totaldevices - num_setupdevices
+            while len(_serial_ports()) > starting:
                 time.sleep(1)
 
         current_devices = 1
