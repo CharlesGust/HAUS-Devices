@@ -455,7 +455,7 @@ Relay's must have an '@' before them.
 
         return contents
 
-    ef _continue_adding_devices(self, virtual_connection, current_devices, num_setupdevices):
+    def _continue_adding_devices(self, virtual_connection, current_devices, num_setupdevices):
         if virtual_connection:
             return raw_input("Would you like to set up a device? (y/n)").startswith('y')
         else:
