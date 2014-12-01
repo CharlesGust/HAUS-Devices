@@ -211,42 +211,49 @@ Relay's must have an '@' before them.
         """
         name = state['device_name']
         port = self.named_connections[name]
-        print name
-        print port
-        jsonmessage = None
-        start_time = time.time()
 
-        port_lock = self.device_locks[name]
-        with port_lock:
-            print "has lock"
-            print "port open"
-            # try:
-            #     response = port.write('Okay')
-            #     response = port.readline()
-            #     if response[0] != 'O' or response[0] != '#':
-            #         raise("Controller is not Okay")
-            # except:
-            #     raise Exception("Controller didn't wake up.")
-            current_state = self.ping_controller_atoms(name, port)
-            self._ensure_port_is_open(port)
-            atoms = state['atoms']
-            print current_state
-            print atoms
-            for key, val in atoms.iteritems():
-                if key[0] == '@':
-                    switch_name, switch_number = key.split('_')
-                    if val != current_state[key]:
-                        print "desired = ", val, " current = ", current_state[key]
-                        port.write(str(switch_number))
+        return converse_with_controller(self,
+                                        name,
+                                        port,
+                                        state['atoms'],
+                                        ping=True,
+                                        sendDollar=True)
+        # print name
+        # print port
+        # jsonmessage = None
+        # start_time = time.time()
 
-            port.write('$')
-            jsonmessage = self.read_raw(name, port)
+        # port_lock = self.device_locks[name]
+        # with port_lock:
+        #     print "has lock"
+        #     print "port open"
+        #     # try:
+        #     #     response = port.write('Okay')
+        #     #     response = port.readline()
+        #     #     if response[0] != 'O' or response[0] != '#':
+        #     #         raise("Controller is not Okay")
+        #     # except:
+        #     #     raise Exception("Controller didn't wake up.")
+        #     current_state = self.ping_controller_atoms(name, port)
+        #     self._ensure_port_is_open(port)
+        #     atoms = state['atoms']
+        #     print current_state
+        #     print atoms
+        #     for key, val in atoms.iteritems():
+        #         if key[0] == '@':
+        #             switch_name, switch_number = key.split('_')
+        #             if val != current_state[key]:
+        #                 print "desired = ", val, " current = ", current_state[key]
+        #                 port.write(str(switch_number))
 
-            # print jsonmessage
+        #     port.write('$')
+        #     jsonmessage = self.read_raw(name, port)
+
+        #     # print jsonmessage
 
 
-        print 'method took :', int(time.time() - start_time), ' seconds'
-        return jsonmessage
+        # print 'method took :', int(time.time() - start_time), ' seconds'
+        # return jsonmessage
 
     def converse_with_controller(self, name, port, message=None, ping=False, sendDollar=False):
         response = None
@@ -448,211 +455,186 @@ Relay's must have an '@' before them.
 
         return contents
 
-    def virtual_connections(self, group_mode):
-        """ ubuntu (in a vbox) does not alter the /dev dynamically """
-        answer = raw_input("Would you like to set up devices? (y/n)")
+    ef _continue_adding_devices(self, virtual_connection, current_devices, num_setupdevices):
+        if virtual_connection:
+            return raw_input("Would you like to set up a device? (y/n)").startswith('y')
+        else:
+            return current_devices <= num_setupdevices
+
+    def run_setup(self):
+        num_totaldevices = len(_serial_ports())
+
+        virtual_connection = (sys.platform.startswith('linux2') and
+                              (_serial_ports()[0].startswith('/dev/ttyS')))
+
+        if  virtual_connection:
+            setup_preface = """
+On a virtual machine, live ports
+cannot be enumerated so plug
+and play is not supported. If you
+would like to run through the
+device setup, you'll need to name
+your devices as well as know what
+port they connect on (usually
+either /dev/ttyS0 or /dev/ttyS1)
+"""
+        else:
+            setup_preface = """
+There are {} ports available.
+If you would like to run through the device
+setup (which will require you unplugging your
+devices, and naming them one by one as they
+connect)
+""".format(num_totaldevices)
+
+        answer = raw_input(setup_preface + "Would you like to set up devices? (y/n)")
         if (answer.lower()[0] != 'y'):
             return None
 
-        # CMGTODO: remove constant values from front of 'or'
-        username = "Charles" or raw_input("What is the account username for all your devices?: ")
-        # access_key = "Gust" or raw_input("What is the access key?: ")
-        timezone = "LA" or raw_input("What is your current timezone?: ")
+        if virtual_connection:
+            num_setupdevices = 0
+        else:
+            answer = raw_input('Plug all your devices in now to continue, then hit enter:')
+            num_totaldevices = len(_serial_ports())
+            num_setupdevices = int(raw_input('Found {} devices, how many devices do you want to name? (1-n): '.format(num_totaldevices)))
 
-        while raw_input("Would you like to set up a device? (y/n)").startswith('y'):
-            debug_only_device_select = int(raw_input("Are you setting up (1) LoveMeter, (2) ServoMood, or (3) Other?: "))
+        username = raw_input("What is the account username for all your devices?: ")
+        password = getpass.getpass("Enter your password: ")
+        timezone = raw_input("What is your current timezone?: ")
 
-            if debug_only_device_select == 1:
-                device_name = "LoveMeter"
-                new_dev = "/dev/ttyS1"
-                device_type = "monitor"
-                baud_rate = "9600"
+        self.session = requests.Session()
+        self.session.auth = (username, password)
+        response = self.session.get('%s/devices' % self.url)
+        if response.status_code == 200:
+            devices = json.loads(response.content)
+            print "Your known devices: %s" % \
+                ", ".join([device['device_name'] for device in devices])
+        else:
+            print "HTTP Error retrieving devices: ", response.status_code
 
-            if debug_only_device_select == 2:
-                device_name = "ServoMood"
-                new_dev = "/dev/ttyS1"
-                device_type = "controller"
-                baud_rate = "9600"
+        if not virtual_connection:
+            print "Unplug them now to continue..."
+            ### Take number of devices connected initially and subtract devices to program ###
+            starting = num_devices - answer
+            while len(_serial_ports()) > (starting):
+                time.sleep(1)
 
-            if debug_only_device_select == 3:
-                device_name = raw_input("What would you like to call the device?")
-                new_dev = raw_input("What is the path to {}? ".format(device_name))
-                device_type = raw_input("Is {} a 'controller' or a 'monitor'?: ".format(device_name))
-                baud_rate = raw_input("The default Baud rate is 9600. Set it now if you like, else hit enter: ")
+        current_devices = 1
 
+        while self._continue_adding_devices(virtual_connection, current_devices, num_setupdevices):
+            if not virtual_connection:
+                current_ports = _serial_ports()
+                print "Now plug in device {}...".format(current_number)
+                while len(current_ports) < current_number + starting:
+                    time.sleep(1)
+                    current_ports = _serial_ports()
 
-            timestamp = time.time()
+                last_port = current_ports.pop()
+                if last_port in User.primary_key_owners:  # Maybe put last_port in primary_key_owners and do this automatically
+                    print "A device can only have one owner, if you'd like to share data you can do so from the owner's dashboard."
+                    break
 
-            device_data = []
-            device_data.append(device_name)
-            device_data.append(device_type)
-            device_data.append(username)
-            # device_data.append(access_key)
-            device_data.append(timezone)
-            device_data.append(timestamp)
+            # Add logic for permissions here
+            known_id = -99
 
-            metadata = dict(zip(self.device_meta_data_field_names, device_data))
-            self.device_metadata[device_name] = metadata
+            device_name = raw_input("What would you like to call device {}?: ".format(current_devices))
+            device_type = raw_input("Is this device a 'controller' or a 'monitor'?: ")
+            baud_rate = raw_input("The default Baud rate is 9600. Set it now if you like, else hit enter: ")
+            if virtual_connection:
+                last_port = raw_input("What is the path to {}? ".format(device_name))
 
-            last_port = new_dev
+            timestamp = 'timestamp' # CMGTODO: why is timestamp set to a literal?
+
             try:
                 self.device_locks[device_name] = self.serial_locks[last_port]
             except KeyError:
                 self.serial_locks[last_port] = Lock()
                 self.device_locks[device_name] = self.serial_locks[last_port]
 
-            # pickup_conn() will return all the serial lines that can be
-            #  opened, so we have to look for the one that matches the device
-            #  path that the user provided
-            connection_list = self.pickup_conn()
-            last_device_connected = None
-            for conn in connection_list:
-                if (conn.port == new_dev):
-                    last_device_connected = conn
-                    break
+
+            metadata = {}
+            device_data = []
+            device_data.append(device_name)
+            device_data.append(device_type)
+            device_data.append(username)
+            device_data.append(timezone)
+            device_data.append(timestamp)
+            metadata = dict(zip(self.device_meta_data_field_names, device_data))
+            self.device_metadata[device_name] = metadata
+
+            if virtual_connection:
+                # pickup_conn() will return all the serial lines that can be
+                #  opened, so we have to look for the one that matches the device
+                #  path that the user provided
+                connection_list = self.pickup_conn()
+                last_device_connected = None
+                for conn in connection_list:
+                    if (conn.port == last_port):
+                        last_device_connected = conn
+                        break
+            else:
+                last_device_connected = self.pickup_conn()[-1]
+
+            if not last_device_connected.isOpen():
+                print "After self.pickup_conn(), the connection is not open"
+                last_device_connected.open()
+
+            # ## This is Arduino protocol ###
+            last_device_connected.write('Okay')
+            response = last_device_connected.readline()
+            if not virtual_connection:
+                # on a virtual connection, you cannot distinguish between
+                #  really having a connection, or just being tied to a
+                #  serial port.
+                assert response == 'Okay'
+
+            if device_type == 'monitor':
+                atoms = self.read_monitors_to_json(device_name,
+                                                   last_device_connected)['atoms']
+                atom_identifiers = [name for name in atoms]
+            else:
+                atoms = self.ping_controller_atoms(device_name,
+                                                   last_device_connected)
+                atom_identifiers = [name for name in atoms]
+            payload = {'device_name': device_name, 'device_type': device_type,
+                       'atoms': atom_identifiers}
+            if known_id != -99:
+                payload['device_id'] = known_id
+            print "made it payload"
+            response = self.session.post('%s/devices' % self.url, data=payload)
+
+            # JBB: Make this handle server errors gracefully
+            if response.status_code in (201, 202):
+                print "Device registered with server"
+            else:
+                print "Problem registering device: HTTPError ",\
+                    response.status_code
+
+            response = json.loads(response.content)
+            device_id = response['id']
+            if device_id in User.primary_key_owners:
+                User.primary_key_owners[last_port].append((device_id, username, device_name))
+            else:
+                User.primary_key_owners[last_port] = [(device_id, username, device_name)]
+
+            self.device_metadata[device_name]['device_id'] = device_id
 
             if baud_rate != '':
                 try:
                     last_device_connected.baud_rate = int(baud_rate)
                 except:
                     raise Exception('Could not set that baud rate, check your input and try again.')
+
             if device_type == 'controller':
                 self.controllers[device_name] = last_device_connected
             elif device_type == 'monitor':
                 self.monitors[device_name] = last_device_connected
+
             self.named_connections[device_name] = last_device_connected
-            print("Device {} at {} is registered!".format(device_name, new_dev))
+            current_number += 1
 
         current_connections = self.named_connections
         return current_connections
-
-    def run_setup(self, group_mode = False):
-        num_devices = len(_serial_ports())
-
-        if (sys.platform.startswith('linux2') and
-            (_serial_ports()[0].startswith('/dev/ttyS'))):
-            return self.virtual_connections(group_mode)
-
-        setup_instructions = """
-There are {} ports available.
-If you would like to run through the device
-setup (which will require you unplugging your
-devices, and naming them one by one as they
-connect. Enter 'quit' or 'continue': """.format(num_devices)
-        answer = raw_input(setup_instructions)
-        if answer == 'q' or answer == 'quit':
-            pass
-        if answer == 'c' or answer == 'continue':
-            answer = raw_input('Plug all your devices in now to continue, then hit enter:')
-            num_devices = len(_serial_ports())
-            answer = int(raw_input('Found {} devices, how many devices do you want to name? (1-n): '.format(num_devices)))
-            username = raw_input("What is the account username for all your devices?: ")
-            password = getpass.getpass("Enter your password: ")
-            timezone = raw_input("What is your current timezone?: ")
-            self.session = requests.Session()
-            self.session.auth = (username, password)
-            response = self.session.get('%s/devices' % self.url)
-            if response.status_code == 200:
-                devices = json.loads(response.content)
-                print "Your known devices: %s" % \
-                    ", ".join([device['device_name'] for device in devices])
-            else:
-                print "HTTP Error retrieving devices: ", response.status_code
-            print "Unplug them now to continue..."
-            ### Take number of devices connected initially and subtract devices to program ###
-            starting = num_devices - answer
-            while len(_serial_ports()) > (starting):
-                time.sleep(1)
-            device_meta_data_field_names = ('device_name', 'device_type', 'username', 'timezone', 'timestamp')
-            current_number = 1
-            for devices in xrange(answer):
-                current_ports = _serial_ports()
-                print "Now plug in device {}...".format(current_number)
-                while len(current_ports) < current_number + starting:
-                    time.sleep(1)
-                    current_ports = _serial_ports()
-                metadata = {}
-                last_port = current_ports.pop()
-                # Add logic for permissions here
-                known_id = -99
-                if last_port in User.primary_key_owners:  # Maybe put last_port in primary_key_owners and do this automatically
-                    print "A device can only have one owner, if you'd like to share data you can do so from the owner's dashboard."
-                    break
-                device_name = raw_input("What would you like to call device {}?: ".format(current_number))
-                device_type = raw_input("Is this device a 'controller' or a 'monitor'?: ")
-                baud_rate = raw_input("The default Baud rate is 9600. Set it now if you like, else hit enter: ")
-                timestamp = 'timestamp'
-
-                try:
-                    self.device_locks[device_name] = self.serial_locks[last_port]
-                except KeyError:
-                    self.serial_locks[last_port] = Lock()
-                    self.device_locks[device_name] = self.serial_locks[last_port]
-
-
-
-                device_data = []
-                device_data.append(device_name)
-                device_data.append(device_type)
-                device_data.append(username)
-                # device_data.append(device_id)
-                device_data.append(timezone)
-                device_data.append(timestamp)
-                metadata = dict(zip(device_meta_data_field_names, device_data))
-                self.device_metadata[device_name] = metadata
-
-                last_device_connected = self.pickup_conn()[-1]
-                if not last_device_connected.isOpen():
-                    print "After self.pickup_conn(), the connection is not open"
-                    last_device_connected.open()
-                ### This is Arduino protocol ###
-                last_device_connected.write('Okay')
-                response = last_device_connected.readline()
-                assert response == 'Okay'
-                if device_type == 'monitor':
-                    atoms = self.read_monitors_to_json(device_name, last_device_connected)['atoms']
-                    atom_identifiers = [name for name in atoms]
-                else:
-                    atoms = self.ping_controller_atoms(device_name, last_device_connected)
-                    atom_identifiers = [name for name in atoms]
-                payload = {'device_name': device_name, 'device_type': device_type, 'atoms': atom_identifiers}
-                if known_id != -99:
-                    payload['device_id'] = known_id
-                print "made it payload"
-                response = self.session.post('%s/devices' % self.url,
-                                         data=payload)
-
-                # JBB: Make this handle server errors gracefully
-                if response.status_code in (201, 202):
-                    print "Device registered with server"
-                else:
-                    print "Problem registering device: HTTPError ",\
-                        response.status_code
-
-                response = json.loads(response.content)
-                device_id = response['id']
-                if device_id in User.primary_key_owners:
-                    User.primary_key_owners[last_port].append((device_id, username, device_name))
-                else:
-                    User.primary_key_owners[last_port] = [(device_id, username, device_name)]
-
-                self.device_metadata[device_name]['device_id'] = device_id
-
-                if baud_rate != '':
-                    try:
-                        last_device_connected.baud_rate = int(baud_rate)
-                    except:
-                        raise Exception('Could not set that baud rate, check your input and try again.')
-
-                if device_type == 'controller':
-                    self.controllers[device_name] = last_device_connected
-                elif device_type == 'monitor':
-                    self.monitors[device_name] = last_device_connected
-
-                self.named_connections[device_name] = last_device_connected
-                current_number += 1
-            current_connections = self.named_connections
-            return current_connections
 
 
 def _serial_ports():
@@ -681,6 +663,7 @@ def _serial_ports():
     else:
         raise EnvironmentError('Unsupported platform')
     return ports
+
 
 def is_number(s):
     try:
