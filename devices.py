@@ -44,7 +44,6 @@ The connection returns in it's open state .
             'device_name',
             'device_type',
             'username',
-            'timezone',
             'timestamp')
 
     def stream_forever(self, frequency = 'A'):
@@ -500,7 +499,6 @@ connect)
 
         username = raw_input("What is the account username for all your devices?: ")
         password = getpass.getpass("Enter your password: ")
-        timezone = raw_input("What is your current timezone?: ")
 
         self.session = requests.Session()
         self.session.auth = (username, password)
@@ -543,7 +541,10 @@ connect)
             if virtual_connection:
                 last_port = raw_input("What is the path to {}? ".format(device_name))
 
-            timestamp = 'timestamp' # CMGTODO: why is timestamp set to a literal?
+            # timestamp is set to a placeholder to avoid the overhead of
+            #  calling time.time() when this is merely going to be overwritten
+            #  by build_json() or read_raw()
+            timestamp = 'timestamp'
 
             try:
                 self.device_locks[device_name] = self.serial_locks[last_port]
@@ -557,7 +558,6 @@ connect)
             device_data.append(device_name)
             device_data.append(device_type)
             device_data.append(username)
-            device_data.append(timezone)
             device_data.append(timestamp)
             metadata = dict(zip(self.device_meta_data_field_names, device_data))
             self.device_metadata[device_name] = metadata
