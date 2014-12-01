@@ -24,8 +24,7 @@ The connection returns in it's open state .
     _instances=[]
     serial_locks = {}
     url = "http://ec2-54-148-194-170.us-west-2.compute.amazonaws.com"  # Update this as needed
-    primary_key_owners = {}  # {device_id: [(username, devicename), ...],}
-
+    primary_key_owners = {}  # {port : [(device_id, username, device_name)]}
     def __init__(self):
         self.send_attempt_number = 0
         ports = _serial_ports()
@@ -54,7 +53,7 @@ The connection returns in it's open state .
                 thread = threading.Thread(target=self.read_monitors_continuously, args = (name, port, inf, frequency))
                 thread.daemon = True
                 thread.start()
-                monitor_thrads.append(thread)
+                monitor_threads.append(thread)
         except:
             for thread in monitor_threads:
                 thread.join()
@@ -73,45 +72,51 @@ The connection returns in it's open state .
         self.serial_connections = serial_list
         return serial_list
 
-    def test_ports(self):
-        pass
-
-    def read_monitors_continuously(self, name, port, timeout=30, frequency = 'A'):
+    def read_monitors_continuously(self, name, timeout=30, frequency = 'A'):
         start = time.time()
         current_time = start
-        while (current_time - start) < timeout:
-            ### frequency logic goes here
-            if frequency == 'A':
-                data_dict = self.read_monitors_to_json(name, port)
-                print data_dict
-                self._send_to_server(data_dict)
-                current_time = time.time()
-            elif frequency == 'M':
-                ### finds the average values if they're numbers else, take the last value ###
-                ### reports the average timestamp ###
-                minute_average_dict = self.log_data(60, name, port)
-                print minute_average_dict
-                self._send_to_server(minute_average_dict)
-            elif frequency == 'H':
-                ## same for hour ##
-                hour_average_dict = self.log_data(3600, name, port)
-                print hour_average_dict
-                self._send_to_server(hour_average_dict)
+        port_lock = self.device_locks[name]
+        port = self.named_connections[name]
+        with port_lock:
+            while (current_time - start) < timeout:
+                ### frequency logic goes here
+                if frequency == 'A':
+                    data_dict = self.read_raw(name)
+                    self._send_to_server(data_dict)
+                    current_time = time.time()
+                elif frequency == 'M':
+                    minute_average_dict = self.log_data(name, 60)
+                    self._send_to_server(minute_average_dict)
+                elif frequency == 'T':
+                    ## same for ten minutes ##
+                    ten_min_average_dict = self.log_data(name, 600)
+                    self._send_to_server(ten_min_average_dict)
+                elif frequency == 'H':
+                    hour_average_dict = self.log_data(name, 3600)
+                    self._send_to_server(hour_average_dict)
 
-    def log_data(self, name, port, seconds):
+                current_time = time.time()
+
+    def log_data(self, name, timeout):
         ### Please note that the reported timestamp on averaged data is also and average value.
         logs = []
         start = time.time()
         current_time = start
-        while current_time - start < seconds:
-            log.append(self.read_monitors_to_json(name, port))
+
+        data_gathered = 0
+        while current_time - start < timeout:
+            print "Gathering data...got {} records so far.".format(data_gathered)
+            current_data = self.read_raw(name)
+            logs.append(current_data)
+            data_gathered += 1
             current_time = time.time()
+
         average_data = {}
         for log in logs:
             for key, val in log['atoms'].iteritems():
                 if is_number(val):
                     try:
-                        average_data[key] = average_data[key] + val
+                        average_data[key] = float(average_data[key]) + float(val)
                     except:
                         average_data[key] = val
                 else:
@@ -119,49 +124,27 @@ The connection returns in it's open state .
                     average_data[key] = val
         for key, summed_data in average_data.iteritems():
             if is_number(summed_data):
-                average_data[key] = summed_data / len(logs)
-        return average_data
+                average_data[key] = float(summed_data) / len(logs)
+        log['atoms'] = average_data
+        return log
 
-    # CMGTODO: _ensure_port_is_open should be static function, or in another class
     def _ensure_port_is_open(self, port):
         if not port.isOpen():
             port.open()
+            port.write('Okay')
+            print "opened the port"
         return
-
-    def read_monitors_to_json(self, name, port, timeout = 30):
-        ### listening for 30 second timeout for testing ###
-        ### if you think your monitors are running slow, check for delays in your arduino sketch ###
-        start_time = time.time()
-        name_time = start_time
-
-        port_lock = self.device_locks[name]
-        # CMGTODO
-        # if we can't get a port_lock, it would probably be more
-        #  efficient to give up on the current monitor than have
-        #  everything else wait for it to become free.
-        with port_lock:
-            jsonmessage = self.read_raw(name, port)
-
-        now_time = time.time()
-        # print name, ' took: ', int(now_time - name_time), 'seconds'
-        name_time = now_time
-        return jsonmessage
-
 
     def _send_to_server(self, jsonmessage):
         self.send_attempt_number += 1
-        if (self.send_attempt_number % 10):  # not zero
-            return
         # PUT device_metadata['device_id'] into payload
         payload = {}
         payload['timestamp'] = jsonmessage['timestamp']
-        print "The atoms thing is:"
-        print type(jsonmessage['atoms']), jsonmessage['atoms']
         payload['atoms'] = jsonmessage['atoms']
         dev_id = self.device_metadata[jsonmessage['device_name']]['device_id']
         device_address = "%s/devices/%d/" % (self.url, dev_id)
         response = self.session.post(device_address, json=payload)
-        print "Posted data: "
+        print "Api receipt: "
         print response.request
         print response.status_code
         if response.status_code == 500:
@@ -171,36 +154,33 @@ The connection returns in it's open state .
         else:
             print response.content
 
-    def ping_controller_atoms(self, name, port):
+    def get_state_from_server(self, name):
+        dev_id = self.device_metadata[name]['device_id']
+        device_address = "%s/devices/%d/current/" % (self.url, dev_id)
+        response = self.session.get(device_address)
+        if response.status_code != 200:
+            print "Something went wrong when contacting the server"
+            return
+        response_dict = json.loads(response.content)
+        desired_states = {}
+        for atom in response_dict:
+            if 'atom_name' in atom:
+                desired_states[atom['atom_name']] = atom['value']
+        print desired_states
 
+        response = self.talk_to_controller(name, desired_states)
+        device_address = "%s/devices/%d/" % (self.url, dev_id)
+        response = self.session.post(device_address, json=response)
+        print response
+
+    def ping_controller_state(self, name):
+        port = self.named_connections[name]
         self._ensure_port_is_open(port)
-        # try:
-        #     response = port.write('Okay')
-        #     response = port.readline()
-        #     print response
-        #     if response[0] != 'O' or response[0] != b'#':
-        #         raise Exception("Controller is not Okay")
-        # except:
-        #     print "Controller didn't wake up"
-        #     # raise Exception("Controller didn't wake up.")
         port.write('$')
-        # response = port.readline()
-        # ###this is hardcoded for testing with relay ###
-        # print response
-        # cleanedresponse = response.rstrip()[1:-1]
-        # atom_pairs = cleanedresponse.split(',')
-        # atoms = {}
-        # for pair in atom_pairs:
-        #     try:
-        #         key, val = pair.split('=')
-        #         atoms[key] = val
-        #     except:
-        #         print "couldn't split"
-        #     print atoms
-        atoms = self.read_raw(name, port)['atoms']
-        return atoms
+        dictionary = self.read_raw(name)
+        return dictionary
 
-    def talk_to_controller(self, state):
+    def talk_to_controller(self, name, state):
         """
 Use method like this:
 for name, port in me.controllers.iteritems():
@@ -270,9 +250,9 @@ Relay's must have an '@' before them.
                         # if a key begins with '@', that is a signal
                         #  to check the val against the current_state
                         #  and ONLY send the message if they are different
-                        switch_name, switch_number = key.split('_')
-                        if val != current_state[key]:
-                            print "desired = ", val, " current = ", message[key]
+                        relay_name, relay_number = key.split('_')
+                        if int(val) != int(float(current_state[key])):
+                            # print "desired = ", val, " current = ", message[key]
                             port.write(str(switch_number))
                     else:
                         # write the dict atoms, separated by commas
@@ -333,56 +313,8 @@ Relay's must have an '@' before them.
 
         return field_separator, keyval_separator
 
-    def _build_json(self, message, device_name):
-        try:
-            message = message.rstrip()
-            contents = {}
-            atoms = {}
-
-            field_separator, keyval_separator =\
-                self._delimiter_factory(message, device_name)
-
-            key_val_pairs = message.split(field_separator)
-            for pair in key_val_pairs:
-                try:
-                    pair_list = pair.split(keyval_separator)
-                    key = pair_list[0].lstrip()
-                    val = pair_list[1].lstrip()
-                    atoms[key] = val
-                except:
-                    print 'got exception, pair is:', pair
-                    print 'field_separator is [{}]'.format(field_separator)
-                    print 'keyval_separator is [{}]'.format(keyval_separator)
-                    return None
-
-            meta_data = self.device_metadata[device_name]
-            for key in self.device_meta_data_field_names:
-                contents[key] = meta_data[key]
-            contents['timestamp'] = time.time()
-            contents['atoms'] = atoms
-
-            return json.dumps(contents)
-        except:
-            raise
-
-    def haus_api_put(self):
-        pass
-
-    def haus_api_get(self):
-        pass
-
-    # read_raw() is a method to pick up reading from the serial port at
-    #  a time when we don't know where we are in the stream. The routine
-   #  is able to build some atoms, but perhaps not more than that.
-    # if timeout, just return
-
-    def read_raw(self, name, port, timeout = 5):
-        """ return JSON representation of parsed line from port, possibly parsed partial line """
-        #### Should change empty readline to a timeout method.
-        ### Method broken! Byte read in is not comparable using =.
-        ### VAL acts as a token to know whether the next bytes string is a key or value in the serialized form###
-        ## based on continuos bytes with no newline return##
-        # The start of line for this test is the '$' for username, and the EOL is '#' #
+    def read_raw(self, name, timeout = 5):
+        """ return dictionary representation of parsed line from port """
 
         # We can start our data structure with any key value pair. A key value pair
         #  starts after a field_separator (comma or semi-colon), or after a new-line
@@ -404,18 +336,15 @@ Relay's must have an '@' before them.
 
         atoms = {}
         contents = {}
-        self._ensure_port_is_open(port)
-
         start_time = time.time()
+        port = self.named_connections[name]
         current = port.read()
+        # while current not in key_value_start_set:
         while current not in key_value_start_set:
-            print "Looking for key_value_start but found {}".format(current)
             current = port.read()
-            print current
             if time.time() - start_time > timeout: return
 
         done = False
-        # try:
         while not done:
             current_key = ''
             current_value = ''
@@ -440,9 +369,6 @@ Relay's must have an '@' before them.
 
             # either of these mark the EOL
             done = c in {b'\n', b'#', b'\r'}
-        # except:
-        #     print "Cannot read_raw"
-        #     raise # Exception("Cannot read_raw")
 
         # if empty_read_count <= empty_read_limit:
         meta_data = self.device_metadata[name]
@@ -529,8 +455,10 @@ connect)
 
                 last_port = current_ports.pop()
                 if last_port in User.primary_key_owners:  # Maybe put last_port in primary_key_owners and do this automatically
-                    print "A device can only have one owner, if you'd like to share data you can do so from the owner's dashboard."
-                    break
+                    print "A device can only have one owner, if you'd like to share data you can do so from the device owner's dashboard."
+                    print "Alternatively you may have hit this break-out if you accidentally swapped devices on a usb which is not supported."
+                    print "Try again"
+                    breakk
 
             # Add logic for permissions here
             known_id = -99
