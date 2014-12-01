@@ -524,8 +524,8 @@ connect)
         while self._continue_adding_devices(virtual_connection, current_devices, num_setupdevices):
             if not virtual_connection:
                 current_ports = _serial_ports()
-                print "Now plug in device {}...".format(current_number)
-                while len(current_ports) < current_number + starting:
+                print "Now plug in device {}...".format(current_devices)
+                while len(current_ports) < current_devices + starting:
                     time.sleep(1)
                     current_ports = _serial_ports()
 
@@ -631,7 +631,7 @@ connect)
                 self.monitors[device_name] = last_device_connected
 
             self.named_connections[device_name] = last_device_connected
-            current_number += 1
+            current_devices += 1
 
         current_connections = self.named_connections
         return current_connections
