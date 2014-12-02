@@ -45,17 +45,27 @@ The connection returns in it's open state .
             'username',
             'timestamp')
 
-    def stream_forever(self, frequency = 'A'):
+    def stream_forever(self, read = 'A', poll = 'S'):
         inf = float("inf")
         monitor_threads = []
+        controller_threads = []
         try:
             for name, port in self.monitors:
-                thread = threading.Thread(target=self.read_monitors_continuously, args = (name, port, inf, frequency))
+                thread = threading.Thread(target=self.read_monitor_continuously, args = (name, inf, read))
                 thread.daemon = True
                 thread.start()
                 monitor_threads.append(thread)
         except:
             for thread in monitor_threads:
+                thread.join()
+        try:
+            for name in self.controllers:
+                thread = threading.Thread(target=self.sync_controller_continuously, args = (name, inf, poll))
+                thread.daemon = True
+                thread.start()
+                controller_threads.append(thread)
+        except:
+            for thread in controller_threads:
                 thread.join()
 
     def pickup_conn(self):
@@ -72,7 +82,7 @@ The connection returns in it's open state .
         self.serial_connections = serial_list
         return serial_list
 
-    def read_monitors_continuously(self, name, timeout=30, frequency = 'A'):
+    def read_monitor_continuously(self, name, timeout=30, frequency = 'A'):
         start = time.time()
         current_time = start
         port_lock = self.device_locks[name]
@@ -96,6 +106,7 @@ The connection returns in it's open state .
                     self._send_to_server(hour_average_dict)
 
                 current_time = time.time()
+
 
     def log_data(self, name, timeout):
         ### Please note that the reported timestamp on averaged data is also and average value.
@@ -154,7 +165,41 @@ The connection returns in it's open state .
         else:
             print response.content
 
-    def get_state_from_server(self, name):
+    def sync_controller_continuously(self, name, timeout = 30, frequency = 'A'):
+        start = time.time()
+        current_time = start
+        port_lock = self.device_locks[name]
+        with port_lock:
+            while (current_time - start) < timeout:
+                if frequency == 'A':
+                    self._sync_controller_states(name)
+                elif frequency == 'S':
+                    start_time = time.time()
+                    freq = 10
+                    self._sync_controller_states(name)
+                    current = time.time()
+                    while current - current_time < freq:
+                        time.sleep(1)
+                        current = time.time()
+                elif frequency == 'M':
+                    start_time = time.time()
+                    freq = 60
+                    self._sync_controller_states(name)
+                    current = time.time()
+                    while current - current_time < freq:
+                        time.sleep(1)
+                        current = time.time()
+                elif frequency == 'T':
+                    start_time = time.time()
+                    freq = 600
+                    self._sync_controller_states(name)
+                    current = time.time()
+                    while current - current_time < freq:
+                        time.sleep(1)
+                        current = time.time()
+                current_time = time.time()
+
+    def _sync_controller_states(self, name):
         dev_id = self.device_metadata[name]['device_id']
         device_address = "%s/devices/%d/current/" % (self.url, dev_id)
         response = self.session.get(device_address)
@@ -166,7 +211,6 @@ The connection returns in it's open state .
         for atom in response_dict:
             if 'atom_name' in atom:
                 desired_states[atom['atom_name']] = atom['value']
-        print desired_states
 
         response = self.talk_to_controller(name, desired_states)
         device_address = "%s/devices/%d/" % (self.url, dev_id)
@@ -180,7 +224,7 @@ The connection returns in it's open state .
         dictionary = self.read_raw(name)
         return dictionary
 
-    def talk_to_controller(self, name, state):
+    def talk_to_controller(self, name, desired_state):
         """
 Use method like this:
 for name, port in me.controllers.iteritems():
@@ -188,93 +232,55 @@ for name, port in me.controllers.iteritems():
 
 Relay's must have an '@' before them.
         """
-        name = state['device_name']
+
         port = self.named_connections[name]
 
         return converse_with_controller(self,
                                         name,
                                         port,
-                                        state['atoms'],
-                                        ping=True,
+                                        desired_state['atoms'],
                                         sendDollar=True)
-        # print name
-        # print port
-        # jsonmessage = None
-        # start_time = time.time()
 
-        # port_lock = self.device_locks[name]
-        # with port_lock:
-        #     print "has lock"
-        #     print "port open"
-        #     # try:
-        #     #     response = port.write('Okay')
-        #     #     response = port.readline()
-        #     #     if response[0] != 'O' or response[0] != '#':
-        #     #         raise("Controller is not Okay")
-        #     # except:
-        #     #     raise Exception("Controller didn't wake up.")
-        #     current_state = self.ping_controller_atoms(name, port)
-        #     self._ensure_port_is_open(port)
-        #     atoms = state['atoms']
-        #     print current_state
-        #     print atoms
-        #     for key, val in atoms.iteritems():
-        #         if key[0] == '@':
-        #             switch_name, switch_number = key.split('_')
-        #             if val != current_state[key]:
-        #                 print "desired = ", val, " current = ", current_state[key]
-        #                 port.write(str(switch_number))
-
-        #     port.write('$')
-        #     jsonmessage = self.read_raw(name, port)
-
-        #     # print jsonmessage
-
-
-        # print 'method took :', int(time.time() - start_time), ' seconds'
-        # return jsonmessage
-
-    def converse_with_controller(self, name, port, message=None, ping=False, sendDollar=False):
+    def converse_with_controller(self, name, port, message, sendDollar=False):
         response = None
 
         start_time = time.time()
         port_lock = self.device_locks[name]
-        with port_lock:
-            if ping:
-                current_state = self.ping_controller_atoms(name, port)
-            self._ensure_port_is_open(port)
-            if type(message) is dict:
-                doComma = False
-                for key, val in message.iteritems():
-                    if key[0] == '@':
-                        # if a key begins with '@', that is a signal
-                        #  to check the val against the current_state
-                        #  and ONLY send the message if they are different
-                        relay_name, relay_number = key.split('_')
-                        if int(val) != int(float(current_state[key])):
-                            # print "desired = ", val, " current = ", message[key]
-                            port.write(str(switch_number))
-                    else:
-                        # write the dict atoms, separated by commas
-                        if doComma:
-                            port.write(', ')
-                        port.write(key)
-                        port.write(':')
-                        port.write(val)
-                        doComma = True
 
-            elif type(message) is str:
-                port.write(message)
-            else:
-                port.write(str(message))
+        if type(message) is dict:
+            current_state = self.ping_controller_state(name)['atoms']
+            doComma = False
+            for key, val in current_state.iteritems():
+                if key[0] == '@':
+                    # if a key begins with '@', that is a signal
+                    #  to check the val against the current_state
+                    #  and ONLY send the message if they are different
+                    relay_name, relay_number = key.split('_')
+                    if int(val) != int(float(message[key])):
+                        # print "desired = ", val, " current = ", message[key]
+                        port.write(str(relay_number))
+                else:
+                    # write the dict atoms, separated by commas
+                    if doComma:
+                        port.write(', ')
+                    port.write(key)
+                    port.write(':')
+                    port.write(val)
+                    doComma = True
 
-            if sendDollar:
-                port.write('$')
-            response = self.read_raw(name, port)
-            # print response
+        elif type(message) is str:
+            port.write(message)
+        else:
+            port.write(str(message))
 
-        print 'method took :', int(time.time() - start_time), ' seconds'
+        if sendDollar:
+            port.write('$')
+        response = self.read_raw(name, port)
+        # print response
+
+        # print 'method took :', int(time.time() - start_time), ' seconds'
         return response
+
 
     # CMGTODO: without memorized decorator, setup dictionary if seen before
     def _delimiter_factory(self, message, device_name):
@@ -467,6 +473,11 @@ connect)
             device_type = raw_input("Is this device a 'controller' or a 'monitor'?: ")
             baud_rate = raw_input("The default Baud rate is 9600. Set it now if you like, else hit enter: ")
             if virtual_connection:
+                # CMGTODO: in non-virtual connections, the User.primary_key_owners
+                #  list is consulted to see if this is an attempt to assign more
+                #  than one device to any owner. But, in the VM environment, all the
+                #  devices will either be on /dev/ttyS0 or /dev/ttyS1.
+                # Therefore, not sure last_port is a durable method to check
                 last_port = raw_input("What is the path to {}? ".format(device_name))
 
             # timestamp is set to a placeholder to avoid the overhead of
@@ -503,33 +514,35 @@ connect)
             else:
                 last_device_connected = self.pickup_conn()[-1]
 
-            if not last_device_connected.isOpen():
-                print "After self.pickup_conn(), the connection is not open"
-                last_device_connected.open()
-
+            self._ensure_port_is_open(last_device_connected)
             # ## This is Arduino protocol ###
             last_device_connected.write('Okay')
             response = last_device_connected.readline()
-            if not virtual_connection:
-                # on a virtual connection, you cannot distinguish between
-                #  really having a connection, or just being tied to a
-                #  serial port.
-                assert response == 'Okay'
 
             if device_type == 'monitor':
-                atoms = self.read_monitors_to_json(device_name,
-                                                   last_device_connected)['atoms']
-                atom_identifiers = [name for name in atoms]
+                atoms = self.read_raw(device_name)['atoms']
+                if atoms is None:
+                    print "Couldn't read the monitor for the specified timeout."
+                    # CMGTODO:
+                    # Not sure why this does a "break". If we can't read a specific
+                    #  monitor, why not process the other monitors and controllers?
+                    break
             else:
-                atoms = self.ping_controller_atoms(device_name,
-                                                   last_device_connected)
-                atom_identifiers = [name for name in atoms]
+                if not virtual_connection:
+                    # on a virtual connection, you cannot distinguish between
+                    #  really having a connection, or just being tied to a
+                    #  serial port.
+                    assert response == "Okay" or response == "####"
+                atoms = self.ping_controller_state(device_name)['atoms']
+
+            atom_identifiers = [name for name in atoms]
+
             payload = {'device_name': device_name, 'device_type': device_type,
                        'atoms': atom_identifiers}
             if known_id != -99:
                 payload['device_id'] = known_id
-            print "made it payload"
-            response = self.session.post('%s/devices' % self.url, data=payload)
+            response = self.session.post('%s/devices' % self.url,
+                                         data=payload)
 
             # JBB: Make this handle server errors gracefully
             if response.status_code in (201, 202):
@@ -544,8 +557,12 @@ connect)
                 User.primary_key_owners[last_port].append((device_id, username, device_name))
             else:
                 User.primary_key_owners[last_port] = [(device_id, username, device_name)]
-
             self.device_metadata[device_name]['device_id'] = device_id
+
+            if device_type == 'controller':
+                response = self.ping_controller_state(device_name)
+                device_address = "%s/devices/%d/" % (self.url, device_id)
+                response = self.session.post(device_address, json=response)
 
             if baud_rate != '':
                 try:
@@ -580,8 +597,8 @@ def _serial_ports():
         if len(ports) == 0:
             # might be on ubuntu with virtual connections, so do a glob.glob
             #  that will still be len() == 0 on non-virtual connections
-            # How to detect if in a VM? It may be that /dev/vboxusb only
-            #  exists on VM's, but have to check with a native Ubuntu (ie, Pi)
+            # How to detect if in a VM? It seems that /dev/vboxusb only
+            #  exists on VM's
 
             if len(glob.glob('/dev/vboxusb*')) > 0:
                 ports = glob.glob('/dev/ttyS*')
